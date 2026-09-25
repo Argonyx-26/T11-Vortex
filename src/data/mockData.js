@@ -41,103 +41,7 @@ export const TEAM_MEMBERS = [
   }
 ];
 
-export const INITIAL_EVENTS = [
-  {
-    id: "EVT-9041",
-    timestamp: "12:25:40",
-    name: "Dr. Krupanjali B.",
-    empId: "EMP-2041",
-    zone: "Gate 1 - North Executive",
-    faceMatch: true,
-    faceConfidence: 99.4,
-    status: "NORMAL",
-    riskScore: 12,
-    sensors: {
-      weapons: { state: "green", label: "Clear", detail: "Optical scan clean (+0)" },
-      rf: { state: "disabled", label: "Not Available", detail: "Requires SDR hardware (0 contribution)" },
-      motion: { state: "disabled", label: "Not Available", detail: "Passive ingress" },
-      network: { state: "disabled", label: "Not Available", detail: "Requires network access integration" }
-    },
-    reasoning: [
-      "Facial biometric match: 99.4% confidence (Dr. Krupanjali B. / SecOps) (+0)",
-      "Real-time object detection: Clean / No weapon detected (+0)",
-      "RF Detection: Not Available (requires SDR hardware — zero score contribution)",
-      "Network Monitoring: Not Available (requires network access integration — zero score contribution)",
-      "Verdict: Threat index low. Identity confirmed. Entry logged silently."
-    ],
-    telemetry: {
-      face_identity: "AUTHORIZED (+0)",
-      object_detected: "none (+0)",
-      fusion_score: 12,
-      rf_detection: "NOT_AVAILABLE (requires SDR hardware)",
-      network_monitoring: "NOT_AVAILABLE (requires network access integration)",
-      fusion_verdict: "CLEARED_NORMAL"
-    }
-  },
-  {
-    id: "EVT-9040",
-    timestamp: "12:24:18",
-    name: "Unknown User 1",
-    empId: "UNK-1001",
-    zone: "Gate 2 - Tech Vault",
-    faceMatch: false,
-    faceConfidence: 38.5,
-    status: "SUSPICIOUS",
-    riskScore: 45,
-    sensors: {
-      weapons: { state: "amber", label: "Box Cutter (+35)", detail: "Concealed utility cutter (+35)" },
-      rf: { state: "disabled", label: "Not Available", detail: "Requires SDR hardware" },
-      motion: { state: "disabled", label: "Not Available", detail: "Passive ingress" },
-      network: { state: "disabled", label: "Not Available", detail: "Requires network access integration" }
-    },
-    reasoning: [
-      "Facial biometric match: No match found in authorized personnel registry (+15 penalty)",
-      "Real-time object detection: Box cutter detected (+35 danger weight)",
-      "RF Detection: Not Available (requires SDR hardware — 0 risk contribution)",
-      "Network Monitoring: Not Available (requires network access integration — 0 risk contribution)",
-      "Total Fusion Score: 50/100 → SUSPICIOUS — Onsite patrol assigned to manual screening."
-    ],
-    telemetry: {
-      face_identity: "UNAUTHORIZED (+15)",
-      object_detected: "box_cutter (+35)",
-      fusion_score: 50,
-      rf_detection: "NOT_AVAILABLE (requires SDR hardware)",
-      network_monitoring: "NOT_AVAILABLE (requires network access integration)",
-      fusion_verdict: "ALERT_SUSPICIOUS"
-    }
-  },
-  {
-    id: "EVT-9039",
-    timestamp: "12:22:50",
-    name: "Sanidhya K.",
-    empId: "EMP-4109",
-    zone: "Gate 1 - North Executive",
-    faceMatch: true,
-    faceConfidence: 98.9,
-    status: "NORMAL",
-    riskScore: 14,
-    sensors: {
-      weapons: { state: "green", label: "Clear", detail: "Optical scan clean (+0)" },
-      rf: { state: "disabled", label: "Not Available", detail: "Requires SDR hardware" },
-      motion: { state: "disabled", label: "Not Available", detail: "Passive ingress" },
-      network: { state: "disabled", label: "Not Available", detail: "Requires network access integration" }
-    },
-    reasoning: [
-      "Facial biometric match: 98.9% confidence (Sanidhya K. / Sensor Fusion) (+0)",
-      "Real-time object detection: Clean / No weapon detected (+0)",
-      "RF & Network Monitoring: Not Available (zero score impact)",
-      "Zero false alarms triggered. Entry logged silently."
-    ],
-    telemetry: {
-      face_identity: "AUTHORIZED (+0)",
-      object_detected: "none (+0)",
-      fusion_score: 14,
-      rf_detection: "NOT_AVAILABLE (requires SDR hardware)",
-      network_monitoring: "NOT_AVAILABLE (requires network access integration)",
-      fusion_verdict: "CLEARED_NORMAL"
-    }
-  }
-];
+export const INITIAL_EVENTS = [];
 
 // 3 Core Demo Scenario Events (Scripted Walkthrough for Demo Mode)
 export const DEMO_SCENARIO_STEPS = [
@@ -396,26 +300,5 @@ export const INSIDER_THREAT_DATA = {
   }
 };
 
-// Initial dispatch log entries (Simulated baseline for demo)
-export const INITIAL_DISPATCH_LOG = [
-  {
-    id: "DISP-101",
-    timestamp: "12:20:15",
-    type: "SILENT",
-    status: "NORMAL",
-    badge: "PASS",
-    message: "Checkpoint Alpha — Employee EVT-9037 cleared silently (No false alarm)",
-    zone: "Gate 1 - North Executive",
-    isSimulated: true
-  },
-  {
-    id: "DISP-102",
-    timestamp: "12:24:22",
-    type: "SUSPICIOUS",
-    status: "SUSPICIOUS",
-    badge: "GUARD ALERT",
-    message: "Guard notified (SUSPICIOUS) — Box cutter detected on visitor at Gate 2",
-    zone: "Gate 2 - Tech Vault",
-    isSimulated: true
-  }
-];
+// Initial dispatch log entries (Clean - live dispatches generated only on real events)
+export const INITIAL_DISPATCH_LOG = [];

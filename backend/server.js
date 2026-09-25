@@ -243,9 +243,99 @@ export function calculateFusionScore(isAuthorized, objectType, subjectName = 'Su
   };
 }
 
+// Twilio Higher Authority Voice Call Integration
+const TWILIO_CONFIG = {
+  accountSid: 'AC15e229b64622fb1895f658947b6942cf',
+  authToken: '924803f3610dd70faa2d16e379183b8e',
+  from: '+17372212163',
+  to: '+919448247676',
+  url: 'https://webhooks.twilio.com/v1/Voice/Template/voice_speech_recognition'
+};
+
+let lastTwilioCallTime = 0;
+const TWILIO_COOLDOWN_MS = 30000;
+let twilioCallLogs = [];
+
+function dispatchTwilioCall({ reason = 'Knife detected in optical feed', threatScore = 95, force = false }) {
+  const now = Date.now();
+  if (!force && (now - lastTwilioCallTime < TWILIO_COOLDOWN_MS)) {
+    const remainingSec = Math.round((TWILIO_COOLDOWN_MS - (now - lastTwilioCallTime)) / 1000);
+    return Promise.resolve({
+      success: true,
+      cooldown: true,
+      remainingSec,
+      message: `Call cooldown active (${remainingSec}s remaining). Authority line protected.`,
+      lastCall: twilioCallLogs[0] || null
+    });
+  }
+
+  return new Promise((resolve) => {
+    const postData = new URLSearchParams({
+      To: TWILIO_CONFIG.to,
+      From: TWILIO_CONFIG.from,
+      Url: TWILIO_CONFIG.url
+    }).toString();
+
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+
+    const options = {
+      hostname: 'api.twilio.com',
+      port: 443,
+      path: `/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Calls.json`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+        'Authorization': `Basic ${auth}`
+      }
+    };
+
+    const twilioReq = https.request(options, (twilioRes) => {
+      let body = '';
+      twilioRes.on('data', chunk => { body += chunk; });
+      twilioRes.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          lastTwilioCallTime = Date.now();
+          const callRecord = {
+            id: parsed.sid || `CALL-${Date.now()}`,
+            sid: parsed.sid,
+            status: parsed.status || (twilioRes.statusCode === 201 ? 'queued' : 'error'),
+            to: TWILIO_CONFIG.to,
+            from: TWILIO_CONFIG.from,
+            timestamp: new Date().toISOString(),
+            threatScore,
+            reason,
+            httpStatus: twilioRes.statusCode
+          };
+          twilioCallLogs.unshift(callRecord);
+          if (twilioCallLogs.length > 20) twilioCallLogs.pop();
+
+          console.log(`[VORTEX TWILIO DISPATCH] Call to Higher Authority (${TWILIO_CONFIG.to}) initiated! SID: ${parsed.sid}, Status: ${parsed.status}`);
+          resolve({
+            success: twilioRes.statusCode >= 200 && twilioRes.statusCode < 300,
+            call: callRecord,
+            raw: parsed
+          });
+        } catch (e) {
+          resolve({ success: false, error: e.message, raw: body });
+        }
+      });
+    });
+
+    twilioReq.on('error', (err) => {
+      console.error('[VORTEX TWILIO ERROR]', err.message);
+      resolve({ success: false, error: err.message });
+    });
+
+    twilioReq.write(postData);
+    twilioReq.end();
+  });
+}
+
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
@@ -255,6 +345,40 @@ const server = http.createServer((req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // POST /api/twilio/call
+  if (req.method === 'POST' && url.pathname === '/api/twilio/call') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const result = await dispatchTwilioCall({
+          reason: payload.reason || 'Knife threat detected at checkpoint',
+          threatScore: payload.threatScore || 95,
+          force: Boolean(payload.force)
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // GET /api/twilio/status
+  if (req.method === 'GET' && url.pathname === '/api/twilio/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      targetAuthority: TWILIO_CONFIG.to,
+      fromNumber: TWILIO_CONFIG.from,
+      lastCallTime: lastTwilioCallTime,
+      callHistory: twilioCallLogs
+    }));
+    return;
+  }
 
   // GET /api/network-info
   if (req.method === 'GET' && url.pathname === '/api/network-info') {
@@ -275,6 +399,22 @@ const server = http.createServer((req, res) => {
     const personnel = readStore();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: personnel.length, personnel }));
+    return;
+  }
+
+  // DELETE /api/personnel/:id
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/personnel/')) {
+    const target = decodeURIComponent(url.pathname.replace('/api/personnel/', '')).toLowerCase().trim();
+    const store = readStore();
+    const initialLen = store.length;
+    const updated = store.filter(p => 
+      p.id.toLowerCase().trim() !== target && 
+      p.name.toLowerCase().trim() !== target
+    );
+    writeStore(updated);
+    console.log(`[VORTEX BACKEND] Deleted personnel: ${target} (count: ${initialLen} -> ${updated.length})`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: updated.length, personnel: updated }));
     return;
   }
 

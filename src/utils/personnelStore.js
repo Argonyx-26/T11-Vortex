@@ -69,6 +69,31 @@ export function saveAuthorizedPersonnel(personnel) {
   }
 }
 
+export function deleteAuthorizedPersonnel(idOrName) {
+  if (!idOrName) return getAuthorizedPersonnel();
+  const list = getAuthorizedPersonnel();
+  const lower = idOrName.toLowerCase().trim();
+  const updatedList = list.filter(p => 
+    p.id.toLowerCase().trim() !== lower && 
+    p.name.toLowerCase().trim() !== lower
+  );
+  saveAuthorizedPersonnel(updatedList);
+
+  // Sync with backend if reachable
+  try {
+    fetch(`${API_BASE}/personnel/${encodeURIComponent(idOrName)}`, {
+      method: 'DELETE'
+    }).catch(() => {});
+  } catch {}
+
+  return updatedList;
+}
+
+export function resetAuthorizedPersonnelToDefaults() {
+  saveAuthorizedPersonnel(DEFAULT_PERSONNEL);
+  return DEFAULT_PERSONNEL;
+}
+
 export async function registerPersonnelOnlineOrOffline({ name, role, department, frames }) {
   const cleanName = name.trim();
   const cleanRole = (role && role.trim() !== '') ? role.trim() : 'Authorized Personnel';

@@ -9,14 +9,24 @@ import {
   CheckCircle2, 
   Clock, 
   MapPin, 
-  Key, 
-  Radio
+  Radio,
+  RefreshCw,
+  ExternalLink,
+  ShieldCheck
 } from 'lucide-react';
 import { soundFx } from '../utils/audio';
+import { 
+  dispatchTwilioAuthorityCall, 
+  HIGHER_AUTHORITY_PHONE, 
+  TWILIO_DISPATCHER_PHONE 
+} from '../utils/twilioService';
 
 export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScore }) {
   const [etaSeconds, setEtaSeconds] = useState(192); // 3m 12s
   const [isAcknowledged, setIsAcknowledged] = useState(false);
+  const [callingAuthority, setCallingAuthority] = useState(false);
+  const [twilioCallStatus, setTwilioCallStatus] = useState(null);
+  const [callSid, setCallSid] = useState(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -25,6 +35,68 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
     }, 1000);
     return () => clearInterval(interval);
   }, [isOpen]);
+
+  // Automatically trigger Twilio Call to Higher Authority on modal open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let isMounted = true;
+    const triggerAutoCall = async () => {
+      setCallingAuthority(true);
+      try {
+        const res = await dispatchTwilioAuthorityCall({
+          reason: 'Emergency Lockdown — Knife Weapon Threat Detected',
+          threatScore: riskScore || 95,
+          subjectName: currentEvent?.name || 'Subject'
+        });
+        if (isMounted) {
+          setCallingAuthority(false);
+          if (res?.callSid || res?.call?.sid) {
+            setCallSid(res.callSid || res.call.sid);
+            setTwilioCallStatus('INITIATED • QUEUED');
+          } else if (res?.cooldown) {
+            setTwilioCallStatus(`COOLDOWN ACTIVE (${res.remainingSec}s)`);
+          } else {
+            setTwilioCallStatus('DISPATCHED');
+          }
+        }
+      } catch (e) {
+        if (isMounted) {
+          setCallingAuthority(false);
+          setTwilioCallStatus('ERROR: ' + e.message);
+        }
+      }
+    };
+
+    triggerAutoCall();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
+  const handleManualCall = async () => {
+    setCallingAuthority(true);
+    soundFx.playCritical();
+    try {
+      const res = await dispatchTwilioAuthorityCall({
+        reason: 'Manual Higher Authority Escalation from Security Console',
+        threatScore: riskScore || 95,
+        subjectName: currentEvent?.name || 'Subject',
+        force: true
+      });
+      setCallingAuthority(false);
+      if (res?.callSid || res?.call?.sid) {
+        setCallSid(res.callSid || res.call.sid);
+        setTwilioCallStatus('LIVE CALL QUEUED');
+      } else {
+        setTwilioCallStatus('CALL DISPATCHED');
+      }
+    } catch (e) {
+      setCallingAuthority(false);
+      setTwilioCallStatus('ERROR: ' + e.message);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -55,11 +127,11 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
                   CRITICAL LOCKDOWN
                 </span>
                 <span className="text-[10px] uppercase bg-black/50 text-white/90 px-2 py-0.5 rounded border border-white/20">
-                  Simulated for demo
+                  REAL TWILIO VOICE ACTIVE
                 </span>
               </div>
               <h2 className="text-lg font-black tracking-wider uppercase mt-0.5">
-                Automated Emergency Response Engaged
+                Automated Emergency Response & Authority Call Engaged
               </h2>
             </div>
           </div>
@@ -81,13 +153,13 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
               <div className="text-slate-400 text-[10px]">INCIDENT LOCATION</div>
               <div className="font-bold text-white flex items-center gap-1 mt-0.5">
                 <MapPin className="w-3.5 h-3.5 text-red-400" />
-                {currentEvent?.zone || "Gate 1 Alpha"}
+                {currentEvent?.zone || "Gate 1 - Checkpoint Optical"}
               </div>
             </div>
             <div>
               <div className="text-slate-400 text-[10px]">THREAT SEVERITY</div>
               <div className="font-bold text-red-400 text-sm mt-0.5">
-                RISK {riskScore || 95}/100 • HIGH
+                RISK {riskScore || 95}/100 • CRITICAL
               </div>
             </div>
             <div>
@@ -99,25 +171,63 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
             </div>
           </div>
 
-          {/* Simulated SMS Dispatch to Onsite Security */}
-          <div className="p-3.5 rounded-xl bg-[#141727] border border-[#23273e]">
+          {/* REAL TWILIO VOICE CALL DISPATCH TO HIGHER AUTHORITY */}
+          <div className="p-3.5 rounded-xl bg-[#141727] border-2 border-red-500/70 shadow-lg shadow-red-950/50">
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                <PhoneCall className="w-4 h-4 text-emerald-400" />
-                <span>Simulated SMS Dispatch (Guard Unit 4)</span>
+              <div className="flex items-center gap-2 text-xs font-bold text-white">
+                <PhoneCall className="w-4 h-4 text-red-400 animate-pulse" />
+                <span>Twilio Live Voice Call Dispatch → Higher Authority</span>
               </div>
-              <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/50 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> SENT • DELIVERED
+              <span className={`text-[10px] px-2 py-0.5 rounded font-black border flex items-center gap-1 ${
+                twilioCallStatus?.includes('INITIATED') || twilioCallStatus?.includes('QUEUED')
+                  ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500 animate-pulse'
+                  : 'bg-red-950/90 text-red-300 border-red-500'
+              }`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                <span>{twilioCallStatus || 'CONNECTING TWILIO...'}</span>
               </span>
             </div>
 
-            <div className="p-3 rounded-lg bg-[#0c0d16] border border-slate-800 text-xs leading-relaxed text-slate-300">
-              <div className="text-[10px] text-slate-500 mb-1">
-                TO: Onsite Tactical Response Lead (+1-555-019-9238) • Channel Alpha
+            <div className="p-3 rounded-lg bg-[#0c0d16] border border-slate-800 text-xs leading-relaxed space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-400">Target Authority Phone:</span>
+                <span className="text-cyan-300 font-bold tracking-wide">{HIGHER_AUTHORITY_PHONE}</span>
               </div>
-              <p className="text-amber-300 font-mono text-[11px]">
-                "[VORTEX-CRITICAL] Threat detected at {currentEvent?.zone || "Gate 1"}. Subject: {currentEvent?.name || "Subject Unknown"} ({currentEvent?.empId || "UNK-0099"}). Multi-sensor correlation triggered weapons radar alert. Turnstiles locked. Intercept team dispatched."
-              </p>
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-400">Outbound Twilio Caller ID:</span>
+                <span className="text-slate-300">{TWILIO_DISPATCHER_PHONE}</span>
+              </div>
+              <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1 border-t border-white/5">
+                <span>TWILIO CALL SID:</span>
+                <span className="text-emerald-400 font-bold">{callSid || 'PENDING DISPATCH'}</span>
+              </div>
+              <div className="text-[10px] text-amber-300 font-mono pt-1">
+                Audio Directive: Triggered automated speech recognition webhook. Authority informed of knife detection threat.
+              </div>
+            </div>
+
+            <div className="mt-2.5 flex items-center justify-between">
+              <span className="text-[10px] text-slate-400">
+                Triggered automatically upon weapon / knife detection.
+              </span>
+              <button
+                type="button"
+                disabled={callingAuthority}
+                onClick={handleManualCall}
+                className="px-3 py-1.5 rounded bg-red-600 hover:bg-red-500 text-white font-mono text-xs font-bold flex items-center gap-1.5 shadow-md shadow-red-600/30 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {callingAuthority ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    <span>Dialing Authority...</span>
+                  </>
+                ) : (
+                  <>
+                    <PhoneCall className="w-3 h-3" />
+                    <span>Call Authority Now (+91 94482 47676)</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
@@ -138,7 +248,7 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
               <div>Host: dispatch.metro911.internal</div>
               <div className="text-slate-500 mt-1">{"{"}</div>
               <div className="pl-4 text-slate-300">"facility": "RV University - Argon High Security Wing",</div>
-              <div className="pl-4 text-slate-300">"checkpoint": "{currentEvent?.zone || "Gate 1 Alpha"}",</div>
+              <div className="pl-4 text-slate-300">"checkpoint": "{currentEvent?.zone || "Gate 1 - Checkpoint Optical"}",</div>
               <div className="pl-4 text-slate-300">"risk_index": {riskScore || 95},</div>
               <div className="pl-4 text-slate-300">"escalation_reason": "Concealed weapon + biometric mismatch",</div>
               <div className="pl-4 text-slate-300">"assigned_units": ["SWAT_METRO_04", "PARAMEDIC_UNIT_12"],</div>

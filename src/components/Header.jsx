@@ -217,19 +217,23 @@ export default function Header({
           {/* Run Demo Scenario Button */}
           <button
             onClick={onRunDemo}
-            disabled={isDemoRunning}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold flex items-center gap-2 transition-all shadow-md active:scale-95 ${
-              isDemoRunning 
+            disabled={useWebcam || isDemoRunning}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold flex items-center gap-2 transition-all shadow-md ${
+              useWebcam 
+                ? 'bg-slate-800/80 text-slate-500 border border-slate-700/60 cursor-not-allowed'
+                : isDemoRunning 
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 cursor-wait' 
-                : 'bg-gradient-to-r from-[#c9a24b] to-[#a88235] text-black font-extrabold hover:brightness-110 shadow-[#c9a24b]/20 hover:shadow-[#c9a24b]/40'
+                : 'bg-gradient-to-r from-[#c9a24b] to-[#a88235] text-black font-extrabold hover:brightness-110 shadow-[#c9a24b]/20 hover:shadow-[#c9a24b]/40 active:scale-95'
             }`}
-            title="Trigger automated 3-stage hackathon demo (Keyboard: Spacebar)"
+            title={useWebcam ? "Demo Mode disabled: Live Camera Mode is active" : "Trigger automated 3-stage hackathon demo (Keyboard: Spacebar)"}
           >
             <Play className={`w-3.5 h-3.5 ${isDemoRunning ? 'animate-spin' : 'fill-current'}`} />
-            <span>{isDemoRunning ? 'Running Demo...' : 'DEMO MODE (Scripted Walkthrough)'}</span>
-            <span className="hidden xl:inline text-[9px] px-1 py-0.5 rounded bg-black/30 text-black/80 font-normal">
-              Space
-            </span>
+            <span>{useWebcam ? 'LIVE CAMERA ACTIVE' : isDemoRunning ? 'Running Demo...' : 'DEMO MODE (CCTV)'}</span>
+            {!useWebcam && (
+              <span className="hidden xl:inline text-[9px] px-1 py-0.5 rounded bg-black/30 text-black/80 font-normal">
+                Space
+              </span>
+            )}
           </button>
 
           {/* Sound Mute Toggle */}

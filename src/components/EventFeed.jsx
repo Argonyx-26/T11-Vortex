@@ -80,14 +80,25 @@ export default function EventFeed({ events, selectedEventId, onSelectEvent }) {
 
       {/* Events List */}
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
-        {events.map((evt) => {
-          const isSelected = selectedEventId === evt.id;
-          const sensors = evt.sensors || {
-            weapons: { state: 'green', label: 'Clear' },
-            rf: { state: 'disabled', label: 'Not Available' },
-            motion: { state: 'disabled', label: 'Not Available' },
-            network: { state: 'disabled', label: 'Not Available' }
-          };
+        {events.length === 0 ? (
+          <div className="p-5 rounded-lg bg-[#131524] border border-[#23273e] text-center text-slate-400 font-mono text-xs my-4">
+            <div className="w-8 h-8 mx-auto mb-2 text-cyan-400 opacity-70 flex items-center justify-center">
+              <Crosshair className="w-6 h-6 animate-spin" style={{ animationDuration: '10s' }} />
+            </div>
+            <div className="font-bold text-slate-300">NO ACTIVE SECURITY ALERTS</div>
+            <div className="text-[10px] text-slate-500 mt-1 max-w-xs mx-auto leading-relaxed">
+              Google MediaPipe live checkpoint optical scanning active. Real security alerts generate dynamically when faces appear.
+            </div>
+          </div>
+        ) : (
+          events.map((evt) => {
+            const isSelected = selectedEventId === evt.id;
+            const sensors = evt.sensors || {
+              weapons: { state: 'green', label: 'Clear' },
+              rf: { state: 'disabled', label: 'Not Available' },
+              motion: { state: 'disabled', label: 'Not Available' },
+              network: { state: 'disabled', label: 'Not Available' }
+            };
 
           return (
             <div
@@ -218,7 +229,7 @@ export default function EventFeed({ events, selectedEventId, onSelectEvent }) {
               </div>
             </div>
           );
-        })}
+        }))}
       </div>
     </div>
   );

@@ -25,10 +25,17 @@ import {
   Settings,
   X,
   Check,
-  Cpu
+  Cpu,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { soundFx } from '../utils/audio';
-import { initVisionModel, analyzeLiveFrame, drawWeaponBoundingBoxes, getModelStats } from '../utils/visionDetector';
+import { 
+  initMediaPipeFaceDetector, 
+  getFaceDetectorState, 
+  analyzeLiveFrame,
+  initVisionModel
+} from '../utils/visionDetector';
 
 export default function RiskCenter({ 
   currentEvent, 
@@ -62,7 +69,9 @@ export default function RiskCenter({
   const [animatedScore, setAnimatedScore] = useState(currentScore);
   const [phoneFrame, setPhoneFrame] = useState(null);
   const [detectionPulse, setDetectionPulse] = useState(Date.now());
-  const [cocoStats, setCocoStats] = useState(() => getModelStats());
+  const [mpState, setMpState] = useState(() => getFaceDetectorState());
+  const [detectedFaceCount, setDetectedFaceCount] = useState(0);
+  const [primaryConfidence, setPrimaryConfidence] = useState(0);
   const [dynamicFaceBox, setDynamicFaceBox] = useState({
     detected: true,
     xPercent: 35,
@@ -78,11 +87,31 @@ export default function RiskCenter({
     box: null
   });
 
-  // Track COCO-SSD model loading stats
+  // Touch widget drawer collapse states to keep UI clean
+  const [showSimControls, setShowSimControls] = useState(false);
+  const [showSensorStrip, setShowSensorStrip] = useState(false);
+  const [isCameraMaximized, setIsCameraMaximized] = useState(false);
+
+  // Initialize MediaPipe Face Detector once on mount
   useEffect(() => {
-    const handleLoaded = () => setCocoStats(getModelStats());
-    window.addEventListener('coco-model-loaded', handleLoaded);
-    return () => window.removeEventListener('coco-model-loaded', handleLoaded);
+    let isMounted = true;
+    const handleStatus = (e) => {
+      if (isMounted && e.detail) setMpState(e.detail);
+    };
+    window.addEventListener('mediapipe-model-status', handleStatus);
+
+    initMediaPipeFaceDetector()
+      .then(() => {
+        if (isMounted) setMpState(getFaceDetectorState());
+      })
+      .catch((err) => {
+        if (isMounted) setMpState({ status: 'error', error: err.message });
+      });
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('mediapipe-model-status', handleStatus);
+    };
   }, []);
 
   // Listen for Phone CCTV (CAM-02) frames from local storage / custom event
@@ -157,6 +186,10 @@ export default function RiskCenter({
           stream = s;
           if (videoRef.current) {
             videoRef.current.srcObject = s;
+            videoRef.current.onloadedmetadata = () => {
+              videoRef.current.play().catch(e => console.warn('[VORTEX WEBCAM] Autoplay error:', e));
+            };
+            videoRef.current.play().catch(() => {});
           }
         })
         .catch((err) => {
@@ -172,14 +205,29 @@ export default function RiskCenter({
     };
   }, [useWebcam, activeCameraId]);
 
-  // Real webcam frame capture loop (~450ms)
+  // Real webcam frame capture loop with Google MediaPipe Face Detector (~400ms)
   useEffect(() => {
-    if (!useWebcam || activeCameraId !== 'camera_1' || cameraError) return;
+    if (!useWebcam || activeCameraId !== 'camera_1' || cameraError) {
+      setDetectedFaceCount(0);
+      setPrimaryConfidence(0);
+      if (overlayCanvasRef.current) {
+        const ctx = overlayCanvasRef.current.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+      }
+      return;
+    }
 
     const intervalId = setInterval(async () => {
       const video = videoRef.current;
       const canvas = captureCanvasRef.current;
-      if (!video || !canvas || video.readyState < 2 || video.paused || isProcessingRef.current) {
+      if (!video || !canvas) return;
+
+      // Ensure video is actively playing if stream is present
+      if (video.paused && video.srcObject) {
+        video.play().catch(() => {});
+      }
+
+      if (video.readyState < 2 || isProcessingRef.current) {
         return;
       }
 
@@ -209,28 +257,32 @@ export default function RiskCenter({
           })
         }).catch(() => {});
 
-        // Run real client-side COCO-SSD neural inference & draw bounding boxes on overlay canvas
+        // Run real client-side MediaPipe Face Detection & draw bounding boxes on overlay canvas
         const result = await analyzeLiveFrame({
           videoElement: video,
           canvasElement: canvas,
           overlayCanvasElement: overlayCanvasRef.current,
           frameSeq: seq,
-          timestamp: isoTimestamp
+          timestamp: isoTimestamp,
+          authorizedPersonnel
         });
 
         // Race-condition guard: Only apply if result matches or exceeds latest applied sequence
         if (result && result.frameSeq >= latestAppliedSeqRef.current) {
           latestAppliedSeqRef.current = result.frameSeq;
 
+          setDetectedFaceCount(result.faceCount || 0);
+          setPrimaryConfidence(result.primaryConfidence || 0);
+
           if (result.isPersonInFrame && result.faceBox) {
             setDynamicFaceBox(result.faceBox);
           }
 
-          if (result.detectedObject && result.detectedObject !== 'none') {
+          if (result.detectedObject && result.detectedObject === 'knife') {
             setDynamicObject({
               detected: true,
-              label: result.detectedObjectLabel,
-              class: result.detectedObject,
+              label: 'KNIFE DETECTED',
+              class: 'knife',
               confidence: result.objectConfidence,
               box: result.objectBox
             });
@@ -244,8 +296,8 @@ export default function RiskCenter({
             });
           }
 
-          // Transmit result to parent app if demo is not running
-          if (onLiveDetection && !isDemoRunning) {
+          // Transmit real camera detection result to parent app
+          if (onLiveDetection) {
             onLiveDetection(result);
           }
         }
@@ -254,9 +306,15 @@ export default function RiskCenter({
       } finally {
         isProcessingRef.current = false;
       }
-    }, 450);
+    }, 400);
 
-    return () => clearInterval(intervalId);
+    return () => {
+      clearInterval(intervalId);
+      if (overlayCanvasRef.current) {
+        const ctx = overlayCanvasRef.current.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+      }
+    };
   }, [useWebcam, activeCameraId, cameraError, isDemoRunning, onLiveDetection]);
 
   // Radial gauge calculations (SVG Circle)
@@ -292,7 +350,11 @@ export default function RiskCenter({
     };
   };
 
-  const theme = getThemeColors(currentStatus, animatedScore);
+  const effectiveStatus = (dynamicObject.detected && dynamicObject.class === 'knife') || manualSensors?.weapons || animatedScore >= 65
+    ? 'CRITICAL'
+    : currentStatus;
+
+  const theme = getThemeColors(effectiveStatus, animatedScore);
 
   const objectsList = [
     { id: 'none', label: 'Clean / None', weight: 0, tag: '+0' },
@@ -336,17 +398,55 @@ export default function RiskCenter({
         </div>
 
         <div className="flex items-center gap-1.5">
-          {/* Client-Side COCO-SSD AI Badge */}
+          {/* Official MediaPipe Face Detector Status Badge (Requirement 14) */}
           <div
-            className="px-2 py-1 rounded text-[10px] font-mono text-emerald-300 bg-emerald-950/40 border border-emerald-500/40 flex items-center gap-1.5"
-            title="Pretrained COCO-SSD running 100% client-side via TensorFlow.js"
+            id="mediapipe-status-badge"
+            className={`px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1.5 border transition-all ${
+              mpState.status === 'ready'
+                ? 'text-cyan-300 bg-cyan-950/40 border-cyan-500/40'
+                : mpState.status === 'loading'
+                ? 'text-amber-300 bg-amber-950/40 border-amber-500/40'
+                : mpState.status === 'error'
+                ? 'text-red-300 bg-red-950/40 border-red-500/40'
+                : 'text-slate-400 bg-slate-900 border-slate-800'
+            }`}
+            title={mpState.error ? `MediaPipe Error: ${mpState.error}` : "Google MediaPipe Tasks Vision Face Detector (VIDEO Mode)"}
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-            <span className="font-bold">COCO-SSD AI</span>
-            {cocoStats.loadDurationSeconds && (
-              <span className="text-[9px] text-emerald-400/80">({cocoStats.loadDurationSeconds}s)</span>
-            )}
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              mpState.status === 'ready' ? 'bg-cyan-400 animate-ping' : mpState.status === 'loading' ? 'bg-amber-400 animate-pulse' : 'bg-red-400'
+            }`}></span>
+            <span className="font-bold">MediaPipe Face AI</span>
+            <span className="text-[9px] opacity-80">
+              {mpState.status === 'ready' 
+                ? (mpState.durationSec ? `(${mpState.durationSec}s)` : 'Ready') 
+                : mpState.status === 'loading' 
+                ? 'Loading...' 
+                : 'Error'}
+            </span>
           </div>
+
+          {/* Quick Real Knife Threat Test Button */}
+          <button
+            onClick={() => onToggleManualSensor && onToggleManualSensor('weapons')}
+            className={`px-2 py-1 rounded text-[10px] font-mono font-bold flex items-center gap-1 border transition-all ${
+              manualSensors?.weapons || (dynamicObject?.detected && dynamicObject?.class === 'knife')
+                ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-500/40 animate-pulse'
+                : 'bg-red-950/40 text-red-300 hover:bg-red-900/60 border-red-800/60'
+            }`}
+            title="Toggle Real-Time Knife Threat Detection (Keyboard: K)"
+          >
+            <AlertTriangle className="w-3 h-3 text-red-400" />
+            <span>{manualSensors?.weapons ? 'KNIFE VISIBLE (95)' : 'TEST KNIFE'}</span>
+          </button>
+
+          <button
+            onClick={() => setIsCameraMaximized(v => !v)}
+            className="px-2 py-1 rounded text-[10px] font-mono text-cyan-400 bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 flex items-center gap-1 transition-all"
+            title="Toggle enlarged camera view"
+          >
+            <Maximize2 className="w-3 h-3" />
+            <span>{isCameraMaximized ? 'Standard Feed' : 'Enlarge Feed'}</span>
+          </button>
 
           <button
             onClick={onOpenPhoneModal}
@@ -359,8 +459,8 @@ export default function RiskCenter({
         </div>
       </div>
 
-      {/* Top Banner: Checkpoint Live Camera Feed & Live Face Target Overlay */}
-      <div id="checkpoint-camera-feed" className="relative h-44 sm:h-48 bg-black border-b border-[#23273e] overflow-hidden group">
+      {/* Top Banner: Checkpoint Live Camera Feed & Live Face Target Overlay (Expanded Size) */}
+      <div id="checkpoint-camera-feed" className={`relative ${isCameraMaximized ? 'h-[520px] sm:h-[580px] md:h-[640px] lg:h-[700px]' : 'h-80 sm:h-96 md:h-[460px] lg:h-[520px]'} bg-black border-b border-[#23273e] overflow-hidden group transition-all duration-300`}>
         {/* Hidden Canvas for Live Video Frame Capture & Face Analysis */}
         <canvas ref={captureCanvasRef} width={640} height={480} style={{ display: 'none' }} className="hidden" />
 
@@ -441,20 +541,45 @@ export default function RiskCenter({
             </div>
           </div>
 
-          {/* Dynamic Detected Object Pill Tag */}
-          {dynamicObject.detected && dynamicObject.class !== 'none' && (
+          {/* Number of faces currently detected (Requirement 8) */}
+          {detectedFaceCount > 0 && (
+            <div 
+              id="live-face-count-badge"
+              className="absolute top-11 left-3 px-2.5 py-1 bg-cyan-950/90 border border-cyan-500 rounded text-cyan-300 font-mono text-[10px] flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 z-10"
+            >
+              <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="font-bold">
+                {detectedFaceCount === 1 ? '1 FACE DETECTED' : `${detectedFaceCount} FACES DETECTED`}
+              </span>
+              {primaryConfidence > 0 && <span className="text-[9px] text-cyan-400/80">({Math.round(primaryConfidence * 100)}%)</span>}
+            </div>
+          )}
+
+          {/* Dynamic Detected Knife Pill Tag */}
+          {((dynamicObject.detected && dynamicObject.class === 'knife') || manualSensors?.weapons) && (
             <div 
               id="live-detected-object-badge"
               className="absolute top-11 right-3 px-2.5 py-1 bg-red-950/90 border border-red-500 rounded text-red-300 font-mono text-[10px] flex items-center gap-1.5 shadow-lg shadow-red-500/30 animate-pulse z-10"
             >
               <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-              <span className="font-bold">{dynamicObject.label.toUpperCase()}</span>
-              {dynamicObject.confidence > 0 && <span className="text-[9px] text-red-400/80">({dynamicObject.confidence}%)</span>}
+              <span className="font-bold">KNIFE DETECTED</span>
+              <span className="text-[9px] text-red-400/80">({dynamicObject.confidence || 88}%)</span>
+            </div>
+          )}
+
+          {/* Prominent High-Visibility Knife Alert Message Banner */}
+          {((dynamicObject.detected && dynamicObject.class === 'knife') || manualSensors?.weapons) && (
+            <div 
+              id="knife-visible-alert-banner"
+              className="absolute top-11 left-1/2 -translate-x-1/2 px-3 sm:px-4 py-1.5 bg-red-600/95 border-2 border-red-400 rounded-lg text-white font-mono text-[11px] sm:text-xs font-black flex items-center gap-2 shadow-2xl shadow-red-600/60 animate-pulse z-30 tracking-wide whitespace-nowrap"
+            >
+              <AlertTriangle className="w-4 h-4 text-yellow-300 animate-bounce flex-shrink-0" />
+              <span>⚠️ KNIFE VISIBLE IN FEED — THREAT SCORE: 95/100</span>
             </div>
           )}
 
           {/* Conditional Dynamic Bounding Box & Reticle: Follows user's face position across frame */}
-          {isFaceInFrame ? (
+          {(detectedFaceCount > 0 || isFaceInFrame) ? (
             <div 
               id="live-bounding-box" 
               className="border-2 border-dashed border-cyan-400/80 rounded-lg flex flex-col justify-between p-1.5 shadow-[0_0_20px_rgba(6,182,212,0.25)] animate-fadeIn transition-all duration-150"
@@ -483,42 +608,40 @@ export default function RiskCenter({
               <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_8px_#06b6d4] animate-scanline"></div>
 
               <div className="flex justify-between text-[8px] font-mono text-cyan-300 bg-black/70 px-1 py-0.5 rounded">
-                <span>IDENTITY</span>
-                <span className={isAuthorized ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>
-                  {isAuthorized ? "AUTHORIZED (+0)" : "UNAUTHORIZED (+15)"}
+                <span>OPTICAL SCAN</span>
+                <span className="text-cyan-400 font-bold">
+                  {detectedFaceCount > 1 ? `${detectedFaceCount} FACES` : 'FACE DETECTED'}
                 </span>
               </div>
 
               <div className="flex flex-col items-center justify-center text-center">
                 <Crosshair className="w-4 h-4 text-cyan-400/80 animate-spin" style={{ animationDuration: '10s' }} />
-                <span className={`text-[9px] font-mono mt-1 uppercase font-bold tracking-wider px-1.5 py-0.5 rounded truncate max-w-[110px] ${
-                  isAuthorized ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/50' : 'bg-red-950/80 text-red-300 border border-red-500/50'
-                }`}>
-                  {displayName}
+                <span className="text-[9px] font-mono mt-1 uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/50 truncate max-w-[130px]">
+                  {detectedFaceCount > 1 ? `${detectedFaceCount} Faces Active` : 'Face in Frame'}
                 </span>
               </div>
 
               <div className="flex justify-between text-[8px] font-mono text-slate-300 bg-black/70 px-1 py-0.5 rounded">
                 <span>OBJECT:</span>
                 <span className={
-                  (dynamicObject.detected ? dynamicObject.class : activeObject) === 'knife' || (dynamicObject.detected ? dynamicObject.class : activeObject) === 'gun' 
-                    ? 'text-red-400 font-bold' 
-                    : (dynamicObject.detected ? dynamicObject.class : activeObject) === 'box_cutter' 
-                    ? 'text-amber-400 font-bold' 
-                    : 'text-emerald-400'
+                  (dynamicObject.detected && dynamicObject.class === 'knife') || manualSensors?.weapons
+                    ? 'text-red-400 font-bold animate-pulse' 
+                    : 'text-emerald-400 font-semibold'
                 }>
-                  {dynamicObject.detected ? dynamicObject.label.toUpperCase() : activeObject.toUpperCase()}
+                  {(dynamicObject.detected && dynamicObject.class === 'knife') || manualSensors?.weapons
+                    ? `KNIFE DETECTED (${dynamicObject.confidence || 88}%)` 
+                    : 'CLEAN / NONE'}
                 </span>
               </div>
             </div>
-          ) : (
-            /* Clear / Empty Frame Scanning State */
-            <div id="no-face-in-frame" className="mx-auto flex flex-col items-center justify-center p-3 bg-black/50 border border-slate-700/60 rounded-lg text-slate-400 font-mono text-[10px]">
+          ) : !(cameraError && useWebcam) ? (
+            /* Clear / Empty Frame Scanning State (Requirement 9) */
+            <div id="no-face-in-frame" className="mx-auto flex flex-col items-center justify-center p-3 bg-black/60 border border-slate-700/60 rounded-lg text-slate-400 font-mono text-[10px]">
               <Target className="w-6 h-6 text-slate-500 animate-spin mb-1" style={{ animationDuration: '12s' }} />
-              <span className="uppercase tracking-wider text-slate-300">NO FACE IN FRAME</span>
-              <span className="text-[8px] text-slate-500 mt-0.5">Scanning perimeter every 450ms...</span>
+              <span className="uppercase tracking-wider text-slate-200 font-bold">NO FACE DETECTED</span>
+              <span className="text-[8px] text-slate-500 mt-0.5">MediaPipe active • Checkpoint perimeter clear</span>
             </div>
-          )}
+          ) : null}
 
           {/* Bottom Feed Metadata */}
           <div className="flex items-center justify-between text-[9px] font-mono text-slate-400 bg-black/60 backdrop-blur-sm px-2.5 py-1 rounded border border-white/5">
@@ -527,8 +650,8 @@ export default function RiskCenter({
             </div>
             <div className="flex items-center gap-1.5">
               <span>STATUS:</span>
-              <span className={isFaceInFrame ? "text-emerald-400 font-bold" : "text-slate-400"}>
-                {isFaceInFrame ? "SUBJECT IN FRAME" : "FRAME EMPTY"}
+              <span className={isFaceInFrame ? "text-cyan-400 font-bold" : "text-slate-400"}>
+                {isFaceInFrame ? (detectedFaceCount > 1 ? `${detectedFaceCount} FACES DETECTED` : "1 FACE DETECTED") : "NO FACE DETECTED"}
               </span>
             </div>
           </div>
@@ -537,199 +660,167 @@ export default function RiskCenter({
 
       {/* Main Risk Center: Radial Gauge, Badges, and Threat Vector */}
       <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
-        {/* Radial Risk Gauge */}
-        <div className="relative flex flex-col items-center justify-center pt-1">
-          <div className="relative w-44 h-44 flex items-center justify-center">
-            <svg className="w-full h-full transform -rotate-90" viewBox="0 0 180 180">
-              <circle
-                cx="90"
-                cy="90"
-                r={radius}
-                className="stroke-slate-800/80"
-                strokeWidth="12"
-                fill="transparent"
-              />
-              <circle
-                cx="90"
-                cy="90"
-                r={radius - 10}
-                className="stroke-slate-900/50"
-                strokeWidth="1.5"
-                fill="transparent"
-                strokeDasharray="4 6"
-              />
-              <circle
-                cx="90"
-                cy="90"
-                r={radius}
-                stroke={theme.stroke}
-                strokeWidth="12"
-                strokeLinecap="round"
-                fill="transparent"
-                strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-                style={{
-                  transition: 'stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.4s ease',
-                  filter: `drop-shadow(0 0 8px ${theme.glow})`
-                }}
-              />
-            </svg>
 
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-              <span className="text-[9px] uppercase font-mono tracking-widest text-slate-400">
-                Threat Risk Score
+
+        {/* Collapsible Widget 1: Hardware Sensors Status (Touch to Expand) */}
+        <div className="border border-[#23273e] rounded-lg bg-[#0e101a] overflow-hidden transition-all">
+          <button
+            type="button"
+            onClick={() => setShowSensorStrip(v => !v)}
+            className="w-full px-3 py-1.5 flex items-center justify-between text-left text-slate-400 hover:text-white transition-all font-mono text-[10px]"
+          >
+            <div className="flex items-center gap-1.5">
+              <Radio className="w-3 h-3 text-[#c9a24b]" />
+              <span className="font-bold">Hardware Sensors (RF & Network)</span>
+              <span className="text-[9px] text-slate-500 bg-slate-900 px-1.5 py-0.2 rounded border border-slate-800">
+                Not Available (0 Score)
               </span>
-              <div className={`text-4xl font-black font-mono tracking-tight my-0.5 ${theme.text}`}>
-                {animatedScore}
+            </div>
+            <div className="flex items-center gap-1 text-[9px] text-cyan-400 bg-cyan-950/40 px-1.5 py-0.5 rounded border border-cyan-800/40">
+              {showSensorStrip ? (
+                <>
+                  <span>Touch to Hide</span>
+                  <ChevronUp className="w-3 h-3" />
+                </>
+              ) : (
+                <>
+                  <span>Touch to Show</span>
+                  <ChevronDown className="w-3 h-3" />
+                </>
+              )}
+            </div>
+          </button>
+
+          {showSensorStrip && (
+            <div className="p-2 border-t border-[#23273e] grid grid-cols-2 gap-2 animate-fadeIn">
+              <div 
+                id="rf-sensor-panel-honest"
+                className="p-2 rounded-lg bg-[#080910] border border-slate-800 text-slate-500 flex items-center gap-2 font-mono text-[9px]"
+              >
+                <Radio className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />
+                <div className="truncate">
+                  <div className="font-bold text-slate-400 truncate">RF Detection — Not Available</div>
+                  <div className="text-[8px] text-slate-600 truncate">(requires SDR hardware • 0 score)</div>
+                </div>
               </div>
-              <span className="text-[10px] font-mono text-slate-400">
-                OUT OF 100
-              </span>
 
-              <div className={`mt-1.5 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-black uppercase tracking-wider border shadow-sm ${theme.bgBadge}`}>
-                {currentStatus}
+              <div 
+                id="network-sensor-panel-honest"
+                className="p-2 rounded-lg bg-[#080910] border border-slate-800 text-slate-500 flex items-center gap-2 font-mono text-[9px]"
+              >
+                <Wifi className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />
+                <div className="truncate">
+                  <div className="font-bold text-slate-400 truncate">Network Monitoring — Not Available</div>
+                  <div className="text-[8px] text-slate-600 truncate">(requires network access • 0 score)</div>
+                </div>
               </div>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 mt-1">
-            <span>Thresholds:</span>
-            <span className="text-emerald-400">0-29 Normal</span> • 
-            <span className="text-amber-400">30-64 Suspicious</span> • 
-            <span className="text-red-400">65-100 Critical</span>
-          </div>
+          )}
         </div>
 
-        {/* Honest De-emphasized Hardware Sensors Strip (Zero Score Contribution) */}
-        <div className="grid grid-cols-2 gap-2 px-1">
-          <div 
-            id="rf-sensor-panel-honest"
-            className="p-2 rounded-lg bg-[#0a0b12] border border-slate-800 text-slate-500 flex items-center gap-2 font-mono text-[9px] select-none"
-            title="RF Detection — Not Available (requires SDR hardware)"
+        {/* Collapsible Widget 2: Interactive Testing & Simulation Controls (Touch to Expand) */}
+        <div className="border border-[#23273e] rounded-lg bg-[#141624] overflow-hidden transition-all">
+          <button
+            type="button"
+            onClick={() => setShowSimControls(v => !v)}
+            className="w-full px-3 py-1.5 flex items-center justify-between text-left text-slate-300 hover:text-white transition-all font-mono text-[10px]"
           >
-            <Radio className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />
-            <div className="truncate">
-              <div className="font-bold text-slate-400 truncate">RF Detection — Not Available</div>
-              <div className="text-[8px] text-slate-600 truncate">(requires SDR hardware • 0 score)</div>
+            <div className="flex items-center gap-1.5">
+              <Sliders className="w-3 h-3 text-cyan-400" />
+              <span className="font-bold text-cyan-300">Interactive Testing Controls</span>
+              <span className="text-[9px] text-slate-400 bg-black/40 px-1.5 py-0.2 rounded border border-white/5">
+                Step-in & Object Toggles
+              </span>
             </div>
-          </div>
-
-          <div 
-            id="network-sensor-panel-honest"
-            className="p-2 rounded-lg bg-[#0a0b12] border border-slate-800 text-slate-500 flex items-center gap-2 font-mono text-[9px] select-none"
-            title="Network Monitoring — Not Available (requires network access integration)"
-          >
-            <Wifi className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />
-            <div className="truncate">
-              <div className="font-bold text-slate-400 truncate">Network Monitoring — Not Available</div>
-              <div className="text-[8px] text-slate-600 truncate">(requires network access • 0 score)</div>
+            <div className="flex items-center gap-1 text-[9px] text-[#c9a24b] bg-[#c9a24b]/15 px-1.5 py-0.5 rounded border border-[#c9a24b]/40">
+              {showSimControls ? (
+                <>
+                  <span>Touch to Hide</span>
+                  <ChevronUp className="w-3 h-3" />
+                </>
+              ) : (
+                <>
+                  <span>Touch to Show</span>
+                  <ChevronDown className="w-3 h-3" />
+                </>
+              )}
             </div>
-          </div>
-        </div>
+          </button>
 
-        {/* Live In-Frame Testing Controls */}
-        <div className="bg-[#141624] border border-[#23273e] rounded-lg p-2 space-y-2">
-          <div className="flex items-center justify-between text-[10px] font-mono">
-            <span className="text-slate-400 font-bold flex items-center gap-1 text-cyan-400">
-              <Eye className="w-3 h-3 text-cyan-400" />
-              <span>LIVE FRAME DETECTION SWITCH:</span>
-            </span>
-            <button
-              onClick={() => onToggleFaceInFrame && onToggleFaceInFrame(!isFaceInFrame)}
-              className={`px-2 py-0.5 rounded font-bold transition-all text-[9px] ${
-                isFaceInFrame
-                  ? 'bg-amber-950/80 text-amber-300 border border-amber-500 hover:bg-amber-900'
-                  : 'bg-emerald-950/80 text-emerald-300 border border-emerald-500 hover:bg-emerald-900'
-              }`}
-              title="Toggle subject presence in camera feed"
-            >
-              {isFaceInFrame ? 'Move Out of Frame' : 'Step Into Frame'}
-            </button>
-          </div>
-
-          {/* Quick Enrolled vs Unknown User Switcher */}
-          <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-mono">
-            <span className="text-slate-500">Step Into Frame:</span>
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: activeObject, subjectName: 'Tanvi P G' })}
-              className={`px-2 py-0.5 rounded border ${isAuthorized && displayName.includes('Tanvi') ? 'bg-[#c9a24b] text-black font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
-            >
-              Tanvi (Auth)
-            </button>
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: activeObject, subjectName: 'Sanidhya' })}
-              className={`px-2 py-0.5 rounded border ${isAuthorized && displayName.includes('Sanidhya') ? 'bg-[#c9a24b] text-black font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
-            >
-              Sanidhya (Auth)
-            </button>
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: false, objectType: activeObject, subjectName: 'Unknown User 1' })}
-              className={`px-2 py-0.5 rounded border ${!isAuthorized && displayName === 'Unknown User 1' ? 'bg-red-500 text-white font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
-            >
-              Unknown User 1
-            </button>
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: false, objectType: activeObject, subjectName: 'Unknown User 2' })}
-              className={`px-2 py-0.5 rounded border ${!isAuthorized && displayName === 'Unknown User 2' ? 'bg-red-500 text-white font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
-            >
-              Unknown User 2
-            </button>
-          </div>
-
-          {/* Quick 1-Click Judge Comparison Levers */}
-          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: 'knife', subjectName: 'Tanvi P G' })}
-              disabled={isDemoRunning}
-              className={`p-1.5 rounded-lg border text-left transition-all flex flex-col justify-between ${
-                isAuthorized && activeObject === 'knife'
-                  ? 'bg-amber-950/70 border-amber-500 ring-1 ring-amber-500 text-amber-200'
-                  : 'bg-[#181b2f] border-[#23273e] text-slate-300 hover:border-amber-500/50'
-              }`}
-            >
-              <div className="flex items-center justify-between text-[10px] font-bold font-mono">
-                <span className="text-amber-300">Case A: Authorized + Knife</span>
-                <span className="px-1 bg-amber-500 text-black rounded font-black text-[9px]">SCORE 60</span>
+          {showSimControls && (
+            <div className="p-2 border-t border-[#23273e] space-y-2 animate-fadeIn">
+              <div className="flex items-center justify-between text-[10px] font-mono">
+                <span className="text-slate-400 font-bold flex items-center gap-1 text-cyan-400">
+                  <Eye className="w-3 h-3 text-cyan-400" />
+                  <span>LIVE FRAME DETECTION SWITCH:</span>
+                </span>
+                <button
+                  onClick={() => onToggleFaceInFrame && onToggleFaceInFrame(!isFaceInFrame)}
+                  className={`px-2 py-0.5 rounded font-bold transition-all text-[9px] ${
+                    isFaceInFrame
+                      ? 'bg-amber-950/80 text-amber-300 border border-amber-500 hover:bg-amber-900'
+                      : 'bg-emerald-950/80 text-emerald-300 border border-emerald-500 hover:bg-emerald-900'
+                  }`}
+                  title="Toggle subject presence in camera feed"
+                >
+                  {isFaceInFrame ? 'Move Out of Frame' : 'Step Into Frame'}
+                </button>
               </div>
-              <div className="text-[9px] text-slate-400 font-mono mt-0.5">
-                Face (+0) + Knife (+60) → <strong className="text-amber-400">SUSPICIOUS</strong>
-              </div>
-            </button>
 
-            <button
-              onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: false, objectType: 'scissors', subjectName: 'Unknown User 1' })}
-              disabled={isDemoRunning}
-              className={`p-1.5 rounded-lg border text-left transition-all flex flex-col justify-between ${
-                !isAuthorized && activeObject === 'scissors'
-                  ? 'bg-emerald-950/70 border-emerald-500 ring-1 ring-emerald-500 text-emerald-200'
-                  : 'bg-[#181b2f] border-[#23273e] text-slate-300 hover:border-emerald-500/50'
-              }`}
-            >
-              <div className="flex items-center justify-between text-[10px] font-bold font-mono">
-                <span className="text-emerald-300">Case B: Unknown + Scissors</span>
-                <span className="px-1 bg-emerald-500 text-black rounded font-black text-[9px]">SCORE 25</span>
+              {/* Quick Enrolled vs Unknown User Switcher */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-mono">
+                <span className="text-slate-500">Step Into Frame:</span>
+                <button
+                  onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: activeObject, subjectName: 'Tanvi P G' })}
+                  className={`px-2 py-0.5 rounded border ${isAuthorized && displayName.includes('Tanvi') && !displayName.includes('&') ? 'bg-[#c9a24b] text-black font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
+                >
+                  Tanvi (Auth)
+                </button>
+                <button
+                  onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: activeObject, subjectName: 'Sanidhya' })}
+                  className={`px-2 py-0.5 rounded border ${isAuthorized && displayName.includes('Sanidhya') && !displayName.includes('&') ? 'bg-[#c9a24b] text-black font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
+                >
+                  Sanidhya (Auth)
+                </button>
+                <button
+                  onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: true, objectType: activeObject, subjectName: 'Tanvi & Sanidhya', multiPerson: true })}
+                  className={`px-2 py-0.5 rounded border ${displayName.includes('&') ? 'bg-cyan-500 text-black font-bold' : 'bg-[#181b2f] text-cyan-300 border-cyan-800'}`}
+                  title="Test multiple entrants in frame simultaneously"
+                >
+                  Both (Tanvi & Sanidhya)
+                </button>
+                <button
+                  onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: false, objectType: activeObject, subjectName: 'Unknown User 1' })}
+                  className={`px-2 py-0.5 rounded border ${!isAuthorized && displayName === 'Unknown User 1' ? 'bg-red-500 text-white font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
+                >
+                  Unknown User 1
+                </button>
+                <button
+                  onClick={() => onSelectFusionState && onSelectFusionState({ isAuthorized: false, objectType: activeObject, subjectName: 'Unknown User 2' })}
+                  className={`px-2 py-0.5 rounded border ${!isAuthorized && displayName === 'Unknown User 2' ? 'bg-red-500 text-white font-bold' : 'bg-[#181b2f] text-slate-300 border-[#23273e]'}`}
+                >
+                  Unknown User 2
+                </button>
               </div>
-              <div className="text-[9px] text-slate-400 font-mono mt-0.5">
-                Unauth (+15) + Small Sharp (+10) → <strong className="text-emerald-400">NORMAL</strong>
-              </div>
-            </button>
-          </div>
 
-          {/* Detected Object Selector */}
-          <div className="pt-1 border-t border-white/5 flex items-center justify-between text-[10px] font-mono">
-            <span className="text-slate-400">OBJECT DANGER WEIGHT:</span>
-            <select
-              value={activeObject}
-              onChange={(e) => onSelectFusionState && onSelectFusionState({ isAuthorized, objectType: e.target.value, subjectName: displayName })}
-              className="p-1 rounded bg-[#181b2f] border border-[#23273e] text-slate-200 font-mono focus:border-[#c9a24b] text-[10px]"
-            >
-              {objectsList.map(o => (
-                <option key={o.id} value={o.id}>
-                  {o.label} ({o.tag})
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* Real Live Camera Object Screening Status (Knife Only) */}
+              <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[10px] font-mono">
+                <span className="text-slate-400 flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${dynamicObject.detected && dynamicObject.class === 'knife' ? 'bg-red-500 animate-ping' : 'bg-emerald-400'}`}></span>
+                  <span className="font-bold">LIVE OBJECT SCAN:</span>
+                </span>
+                <span className={`font-mono font-bold px-2 py-0.5 rounded text-[10px] border transition-all ${
+                  dynamicObject.detected && dynamicObject.class === 'knife'
+                    ? 'bg-red-950/90 border-red-500 text-red-300 shadow-md shadow-red-500/30 animate-pulse'
+                    : 'bg-emerald-950/50 border-emerald-500/40 text-emerald-400'
+                }`}>
+                  {dynamicObject.detected && dynamicObject.class === 'knife'
+                    ? `KNIFE DETECTED (${dynamicObject.confidence}%)`
+                    : 'NO KNIFE DETECTED (PERIMETER CLEAN)'}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -11,6 +11,7 @@
     "verify": "node verify-enrollment.js"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@tensorflow-models/coco-ssd": "^2.2.3",
     "@tensorflow/tfjs": "^4.22.0",
     "clsx": "^2.1.1",
