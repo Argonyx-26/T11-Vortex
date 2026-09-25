@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#0a0a0f] text-slate-100 overflow-x-hidden;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 15, 0.8);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(201, 162, 75, 0.25);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(201, 162, 75, 0.5);
+}
+
+/* Control room cyber grid overlay */
+.cyber-grid {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(201, 162, 75, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(201, 162, 75, 0.04) 1px, transparent 1px);
+}
+
+/* CRT scanlines effect */
+.scanlines {
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.25) 50%
+  );
+  background-size: 100% 4px;
+}
+
+/* HUD corner brackets */
+.hud-corner-tl {
+  position: relative;
+}
+.hud-corner-tl::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid #c9a24b;
+  border-left: 2px solid #c9a24b;
+}
+
+.hud-corner-br {
+  position: relative;
+}
+.hud-corner-br::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-bottom: 2px solid #c9a24b;
+  border-right: 2px solid #c9a24b;
+}
+
+/* Subtle glow utility classes */
+.gold-glow {
+  box-shadow: 0 0 20px rgba(201, 162, 75, 0.25);
+}
+
+.critical-glow {
+  box-shadow: 0 0 35px rgba(239, 68, 68, 0.4);
+}
+
+.suspicious-glow {
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.35);
+}
+
+.normal-glow {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+}
