@@ -1,12 +1,35 @@
 // Twilio Higher Authority Voice Call Service for Vortex AI Security
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = (typeof window !== 'undefined' && window.location.origin) ? '/api' : 'http://localhost:3001/api';
 
 export const HIGHER_AUTHORITY_PHONE = '+91 94482 47676';
 export const TWILIO_DISPATCHER_PHONE = '+1 (737) 221-2163';
 
 let lastCallTimestamp = 0;
 const CALL_COOLDOWN_MS = 30000; // 30s client cooldown to protect phone lines
+
+export async function getTwilioStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/twilio/status`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.warn('[Twilio Service] Could not fetch status:', e);
+  }
+  return null;
+}
+
+export async function updateTwilioAuthToken(token) {
+  try {
+    const res = await fetch(`${API_BASE}/twilio/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authToken: token })
+    });
+    return await res.json();
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
 
 export async function dispatchTwilioAuthorityCall({
   reason = 'Knife / weapon threat detected at checkpoint',
@@ -39,58 +62,34 @@ export async function dispatchTwilioAuthorityCall({
 
     if (res.ok) {
       const data = await res.json();
-      lastCallTimestamp = Date.now();
-      window.dispatchEvent(new CustomEvent('twilio-call-dispatched', {
-        detail: {
-          timestamp: new Date().toISOString(),
-          to: HIGHER_AUTHORITY_PHONE,
-          from: TWILIO_DISPATCHER_PHONE,
-          threatScore,
-          reason,
-          subjectName,
-          ...data
-        }
-      }));
+      if (data.success) {
+        lastCallTimestamp = Date.now();
+        window.dispatchEvent(new CustomEvent('twilio-call-dispatched', {
+          detail: {
+            timestamp: new Date().toISOString(),
+            to: HIGHER_AUTHORITY_PHONE,
+            from: TWILIO_DISPATCHER_PHONE,
+            threatScore,
+            reason,
+            subjectName,
+            ...data
+          }
+        }));
+      }
       return data;
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      return {
+        success: false,
+        error: errData.error || `Server responded with HTTP ${res.status}`,
+        errorCode: errData.errorCode
+      };
     }
   } catch (err) {
-    console.warn('[Twilio Service] Backend call proxy unavailable, attempting fallback:', err);
-  }
-
-  // Fallback: direct API call via standard form-encoded payload
-  try {
-    const accountSid = 'AC15e229b64622fb1895f658947b6942cf';
-    const authToken = '924803f3610dd70faa2d16e379183b8e';
-    const postData = new URLSearchParams({
-      To: '+919448247676',
-      From: '+17372212163',
-      Url: 'https://webhooks.twilio.com/v1/Voice/Template/voice_speech_recognition'
-    });
-
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': 'Basic ' + btoa(`${accountSid}:${authToken}`)
-      },
-      body: postData.toString()
-    });
-
-    const data = await res.json();
-    lastCallTimestamp = Date.now();
+    console.error('[Twilio Service] Backend call proxy unavailable:', err);
     return {
-      success: res.ok,
-      call: {
-        id: data.sid,
-        sid: data.sid,
-        status: data.status,
-        to: HIGHER_AUTHORITY_PHONE,
-        from: TWILIO_DISPATCHER_PHONE,
-        threatScore
-      }
+      success: false,
+      error: `Network error connecting to Vortex backend: ${err.message}`
     };
-  } catch (err) {
-    console.error('[Twilio Service] Fallback call failed:', err);
-    return { success: false, error: err.message };
   }
 }

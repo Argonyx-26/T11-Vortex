@@ -17,6 +17,7 @@ import {
 import { soundFx } from '../utils/audio';
 import { 
   dispatchTwilioAuthorityCall, 
+  updateTwilioAuthToken,
   HIGHER_AUTHORITY_PHONE, 
   TWILIO_DISPATCHER_PHONE 
 } from '../utils/twilioService';
@@ -26,7 +27,12 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
   const [isAcknowledged, setIsAcknowledged] = useState(false);
   const [callingAuthority, setCallingAuthority] = useState(false);
   const [twilioCallStatus, setTwilioCallStatus] = useState(null);
+  const [twilioError, setTwilioError] = useState(null);
   const [callSid, setCallSid] = useState(null);
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [newAuthToken, setNewAuthToken] = useState('');
+  const [isUpdatingToken, setIsUpdatingToken] = useState(false);
+  const [tokenSaveMessage, setTokenSaveMessage] = useState(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -35,6 +41,35 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
     }, 1000);
     return () => clearInterval(interval);
   }, [isOpen]);
+
+  const processCallResult = (res) => {
+    if (res?.success && (res?.callSid || res?.call?.sid)) {
+      setCallSid(res.callSid || res.call.sid);
+      setTwilioCallStatus('INITIATED • QUEUED');
+      setTwilioError(null);
+      setShowTokenInput(false);
+    } else if (res?.cooldown) {
+      setTwilioCallStatus(`COOLDOWN ACTIVE (${res.remainingSec}s)`);
+      setTwilioError(null);
+    } else {
+      const errCode = res?.errorCode || res?.raw?.code;
+      const errMsg = res?.error || res?.raw?.message || 'Call failed to dispatch';
+      if (errCode === 20003 || errMsg.toLowerCase().includes('auth token') || errMsg.toLowerCase().includes('401') || res?.call?.httpStatus === 401) {
+        setTwilioCallStatus('AUTH FAILED (401)');
+        setTwilioError('Twilio Auth Token is invalid or expired. Paste new Auth Token from Twilio Console.');
+        setShowTokenInput(true);
+      } else if (errCode === 21212 || errCode === 21608 || errMsg.toLowerCase().includes('unverified')) {
+        setTwilioCallStatus('UNVERIFIED NUMBER');
+        setTwilioError('+91 94482 47676 is not verified in Twilio Console under Verified Caller IDs.');
+      } else if (errCode === 21215 || errMsg.toLowerCase().includes('geo')) {
+        setTwilioCallStatus('GEO PERMISSION BLOCKED');
+        setTwilioError('Voice calls to India (+91) disabled in Twilio Console -> Voice -> Geo Permissions.');
+      } else {
+        setTwilioCallStatus('DISPATCH FAILED');
+        setTwilioError(errMsg);
+      }
+    }
+  };
 
   // Automatically trigger Twilio Call to Higher Authority on modal open
   useEffect(() => {
@@ -51,19 +86,13 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
         });
         if (isMounted) {
           setCallingAuthority(false);
-          if (res?.callSid || res?.call?.sid) {
-            setCallSid(res.callSid || res.call.sid);
-            setTwilioCallStatus('INITIATED • QUEUED');
-          } else if (res?.cooldown) {
-            setTwilioCallStatus(`COOLDOWN ACTIVE (${res.remainingSec}s)`);
-          } else {
-            setTwilioCallStatus('DISPATCHED');
-          }
+          processCallResult(res);
         }
       } catch (e) {
         if (isMounted) {
           setCallingAuthority(false);
-          setTwilioCallStatus('ERROR: ' + e.message);
+          setTwilioCallStatus('DISPATCH ERROR');
+          setTwilioError(e.message);
         }
       }
     };
@@ -86,15 +115,38 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
         force: true
       });
       setCallingAuthority(false);
-      if (res?.callSid || res?.call?.sid) {
-        setCallSid(res.callSid || res.call.sid);
-        setTwilioCallStatus('LIVE CALL QUEUED');
-      } else {
-        setTwilioCallStatus('CALL DISPATCHED');
-      }
+      processCallResult(res);
     } catch (e) {
       setCallingAuthority(false);
-      setTwilioCallStatus('ERROR: ' + e.message);
+      setTwilioCallStatus('DISPATCH ERROR');
+      setTwilioError(e.message);
+    }
+  };
+
+  const handleSaveTokenAndRetry = async (e) => {
+    e?.preventDefault();
+    if (!newAuthToken.trim()) return;
+    setIsUpdatingToken(true);
+    setTokenSaveMessage('Validating token with Twilio API...');
+    try {
+      const res = await updateTwilioAuthToken(newAuthToken.trim());
+      if (res?.success) {
+        setTokenSaveMessage('Token verified! Placing emergency call now...');
+        const callRes = await dispatchTwilioAuthorityCall({
+          reason: 'Emergency Lockdown Escalation',
+          threatScore: riskScore || 95,
+          subjectName: currentEvent?.name || 'Subject',
+          force: true
+        });
+        setIsUpdatingToken(false);
+        processCallResult(callRes);
+      } else {
+        setIsUpdatingToken(false);
+        setTokenSaveMessage(`Token rejected: ${res?.details?.message || 'Invalid Auth Token'}`);
+      }
+    } catch (err) {
+      setIsUpdatingToken(false);
+      setTokenSaveMessage(`Error: ${err.message}`);
     }
   };
 
@@ -172,18 +224,22 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
           </div>
 
           {/* REAL TWILIO VOICE CALL DISPATCH TO HIGHER AUTHORITY */}
-          <div className="p-3.5 rounded-xl bg-[#141727] border-2 border-red-500/70 shadow-lg shadow-red-950/50">
-            <div className="flex items-center justify-between mb-2">
+          <div className="p-3.5 rounded-xl bg-[#141727] border-2 border-red-500/70 shadow-lg shadow-red-950/50 space-y-2.5">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-bold text-white">
-                <PhoneCall className="w-4 h-4 text-red-400 animate-pulse" />
+                <PhoneCall className={`w-4 h-4 ${twilioCallStatus?.includes('FAILED') || twilioCallStatus?.includes('ERROR') ? 'text-red-400' : 'text-red-400 animate-pulse'}`} />
                 <span>Twilio Live Voice Call Dispatch → Higher Authority</span>
               </div>
               <span className={`text-[10px] px-2 py-0.5 rounded font-black border flex items-center gap-1 ${
                 twilioCallStatus?.includes('INITIATED') || twilioCallStatus?.includes('QUEUED')
                   ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500 animate-pulse'
+                  : twilioCallStatus?.includes('COOLDOWN')
+                  ? 'bg-amber-950/90 text-amber-300 border-amber-500'
                   : 'bg-red-950/90 text-red-300 border-red-500'
               }`}>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  twilioCallStatus?.includes('FAILED') || twilioCallStatus?.includes('ERROR') ? 'bg-red-500' : 'bg-emerald-400 animate-ping'
+                }`}></span>
                 <span>{twilioCallStatus || 'CONNECTING TWILIO...'}</span>
               </span>
             </div>
@@ -197,14 +253,70 @@ export default function EmergencyModal({ isOpen, onClose, currentEvent, riskScor
                 <span className="text-slate-400">Outbound Twilio Caller ID:</span>
                 <span className="text-slate-300">{TWILIO_DISPATCHER_PHONE}</span>
               </div>
-              <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1 border-t border-white/5">
-                <span>TWILIO CALL SID:</span>
-                <span className="text-emerald-400 font-bold">{callSid || 'PENDING DISPATCH'}</span>
-              </div>
-              <div className="text-[10px] text-amber-300 font-mono pt-1">
-                Audio Directive: Triggered automated speech recognition webhook. Authority informed of knife detection threat.
-              </div>
+              {callSid && (
+                <div className="flex items-center justify-between text-[10px] font-mono text-emerald-400 pt-1 border-t border-white/5">
+                  <span>TWILIO CALL SID:</span>
+                  <span className="font-bold">{callSid}</span>
+                </div>
+              )}
             </div>
+
+            {/* Error & Guidance Banner */}
+            {twilioError && (
+              <div className="p-2.5 rounded-lg bg-red-950/60 border border-red-500/60 text-[11px] font-sans text-red-200 space-y-1.5">
+                <div className="font-bold flex items-center gap-1.5 text-red-300">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                  <span>Call Not Placed — Telephony Gateway Error</span>
+                </div>
+                <p className="text-[10px] leading-tight text-red-100">{twilioError}</p>
+                <div className="pt-1 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setShowTokenInput(prev => !prev)}
+                    className="text-[10px] text-cyan-300 underline hover:text-cyan-200 font-mono"
+                  >
+                    {showTokenInput ? '▲ Hide Token Input' : '▼ Update Twilio Auth Token'}
+                  </button>
+                  <a
+                    href="https://console.twilio.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] text-slate-300 hover:text-white underline font-mono"
+                  >
+                    Open Twilio Console ↗
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {/* Interactive Auth Token Updater */}
+            {showTokenInput && (
+              <form onSubmit={handleSaveTokenAndRetry} className="p-2.5 rounded-lg bg-[#0e101a] border border-cyan-500/40 space-y-2">
+                <label className="block text-[10px] font-mono text-cyan-300">
+                  Paste Active Twilio Auth Token:
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    placeholder="Enter 32-character Auth Token"
+                    value={newAuthToken}
+                    onChange={(e) => setNewAuthToken(e.target.value)}
+                    className="flex-1 bg-black/60 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isUpdatingToken || !newAuthToken.trim()}
+                    className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-bold disabled:opacity-50 flex items-center gap-1 font-mono"
+                  >
+                    {isUpdatingToken ? <RefreshCw className="w-3 h-3 animate-spin" /> : null}
+                    Save & Call
+                  </button>
+                </div>
+                {tokenSaveMessage && (
+                  <p className="text-[10px] font-mono text-amber-300">{tokenSaveMessage}</p>
+                )}
+              </form>
+            )}
 
             <div className="mt-2.5 flex items-center justify-between">
               <span className="text-[10px] text-slate-400">

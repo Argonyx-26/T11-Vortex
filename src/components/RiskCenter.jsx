@@ -246,7 +246,7 @@ export default function RiskCenter({
 
         // Send real frame to backend non-blocking
         const frameData = canvas.toDataURL('image/jpeg', 0.45);
-        fetch('http://localhost:3001/api/camera-frame', {
+        fetch('/api/camera-frame', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

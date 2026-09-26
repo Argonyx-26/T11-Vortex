@@ -7,6 +7,17 @@ export default defineConfig({
   base: './', // Allows opening dist/index.html directly via file:// protocol offline
   server: {
     port: 5173,
-    host: true
+    host: true,
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
+      },
+      '/ws': {
+        target: 'ws://localhost:3001',
+        ws: true
+      }
+    }
   }
 })

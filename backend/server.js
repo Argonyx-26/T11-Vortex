@@ -245,8 +245,8 @@ export function calculateFusionScore(isAuthorized, objectType, subjectName = 'Su
 
 // Twilio Higher Authority Voice Call Integration
 const TWILIO_CONFIG = {
-  accountSid: 'AC15e229b64622fb1895f658947b6942cf',
-  authToken: '924803f3610dd70faa2d16e379183b8e',
+  accountSid: process.env.TWILIO_ACCOUNT_SID || 'AC15e229b64622fb1895f658947b6942cf',
+  authToken: process.env.TWILIO_AUTH_TOKEN || 'eccfd2de08c7570cba050fd99da3cb27',
   from: '+17372212163',
   to: '+919448247676',
   url: 'https://webhooks.twilio.com/v1/Voice/Template/voice_speech_recognition'
@@ -255,6 +255,40 @@ const TWILIO_CONFIG = {
 let lastTwilioCallTime = 0;
 const TWILIO_COOLDOWN_MS = 30000;
 let twilioCallLogs = [];
+
+function verifyTwilioCredentials() {
+  return new Promise((resolve) => {
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+    const options = {
+      hostname: 'api.twilio.com',
+      port: 443,
+      path: `/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}.json`,
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${auth}` }
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          resolve({
+            valid: res.statusCode === 200,
+            httpStatus: res.statusCode,
+            accountStatus: parsed.status,
+            accountName: parsed.friendly_name,
+            code: parsed.code,
+            message: parsed.message
+          });
+        } catch (e) {
+          resolve({ valid: false, error: e.message });
+        }
+      });
+    });
+    req.on('error', err => resolve({ valid: false, error: err.message }));
+    req.end();
+  });
+}
 
 function dispatchTwilioCall({ reason = 'Knife detected in optical feed', threatScore = 95, force = false }) {
   const now = Date.now();
@@ -296,35 +330,48 @@ function dispatchTwilioCall({ reason = 'Knife detected in optical feed', threatS
       twilioRes.on('end', () => {
         try {
           const parsed = JSON.parse(body);
-          lastTwilioCallTime = Date.now();
+          const isSuccess = twilioRes.statusCode >= 200 && twilioRes.statusCode < 300 && Boolean(parsed.sid);
+          if (isSuccess) {
+            lastTwilioCallTime = Date.now();
+            console.log(`[VORTEX TWILIO DISPATCH SUCCESS] Call to Higher Authority (${TWILIO_CONFIG.to}) initiated! SID: ${parsed.sid}, Status: ${parsed.status}`);
+          } else {
+            console.error(`[VORTEX TWILIO DISPATCH FAILED] HTTP ${twilioRes.statusCode}, Code: ${parsed.code}, Message: ${parsed.message}`);
+          }
+
           const callRecord = {
             id: parsed.sid || `CALL-${Date.now()}`,
-            sid: parsed.sid,
-            status: parsed.status || (twilioRes.statusCode === 201 ? 'queued' : 'error'),
+            sid: parsed.sid || null,
+            status: isSuccess ? (parsed.status || 'queued') : 'failed',
             to: TWILIO_CONFIG.to,
             from: TWILIO_CONFIG.from,
             timestamp: new Date().toISOString(),
             threatScore,
             reason,
-            httpStatus: twilioRes.statusCode
+            httpStatus: twilioRes.statusCode,
+            errorCode: parsed.code || null,
+            errorMessage: parsed.message || (isSuccess ? null : `HTTP ${twilioRes.statusCode}`)
           };
           twilioCallLogs.unshift(callRecord);
           if (twilioCallLogs.length > 20) twilioCallLogs.pop();
 
-          console.log(`[VORTEX TWILIO DISPATCH] Call to Higher Authority (${TWILIO_CONFIG.to}) initiated! SID: ${parsed.sid}, Status: ${parsed.status}`);
           resolve({
-            success: twilioRes.statusCode >= 200 && twilioRes.statusCode < 300,
+            success: isSuccess,
             call: callRecord,
+            callSid: parsed.sid || null,
+            status: callRecord.status,
+            error: isSuccess ? null : (parsed.message || `Twilio dispatch failed (HTTP ${twilioRes.statusCode})`),
+            errorCode: parsed.code || null,
             raw: parsed
           });
         } catch (e) {
+          console.error('[VORTEX TWILIO PARSE ERROR]', e.message);
           resolve({ success: false, error: e.message, raw: body });
         }
       });
     });
 
     twilioReq.on('error', (err) => {
-      console.error('[VORTEX TWILIO ERROR]', err.message);
+      console.error('[VORTEX TWILIO NETWORK ERROR]', err.message);
       resolve({ success: false, error: err.message });
     });
 
@@ -345,6 +392,47 @@ const server = http.createServer((req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // POST /api/twilio/config - Update Twilio token or numbers dynamically
+  if (req.method === 'POST' && url.pathname === '/api/twilio/config') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        if (payload.authToken && typeof payload.authToken === 'string') {
+          TWILIO_CONFIG.authToken = payload.authToken.trim();
+        }
+        if (payload.accountSid && typeof payload.accountSid === 'string') {
+          TWILIO_CONFIG.accountSid = payload.accountSid.trim();
+        }
+        if (payload.to && typeof payload.to === 'string') {
+          TWILIO_CONFIG.to = payload.to.trim();
+        }
+        if (payload.from && typeof payload.from === 'string') {
+          TWILIO_CONFIG.from = payload.from.trim();
+        }
+
+        const verify = await verifyTwilioCredentials();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: verify.valid,
+          verified: verify.valid,
+          config: {
+            accountSid: TWILIO_CONFIG.accountSid,
+            to: TWILIO_CONFIG.to,
+            from: TWILIO_CONFIG.from,
+            tokenLength: TWILIO_CONFIG.authToken.length
+          },
+          details: verify
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
 
   // POST /api/twilio/call
   if (req.method === 'POST' && url.pathname === '/api/twilio/call') {
@@ -374,8 +462,10 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       targetAuthority: TWILIO_CONFIG.to,
       fromNumber: TWILIO_CONFIG.from,
+      accountSid: TWILIO_CONFIG.accountSid,
       lastCallTime: lastTwilioCallTime,
-      callHistory: twilioCallLogs
+      callHistory: twilioCallLogs,
+      lastFailedCall: twilioCallLogs.find(c => c.status === 'failed') || null
     }));
     return;
   }

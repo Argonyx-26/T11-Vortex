@@ -1,7 +1,7 @@
 // Client & Backend Persistent Store for Authorized Personnel and Rebalanced Fusion Scoring
 
 const STORAGE_KEY = 'vortex_authorized_personnel';
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = (typeof window !== 'undefined' && window.location.origin) ? '/api' : 'http://localhost:3001/api';
 
 const DEFAULT_PERSONNEL = [
   {
